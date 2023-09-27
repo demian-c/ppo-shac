@@ -205,6 +205,7 @@ def mem_report():
 def grad_norm(params):
     grad_norm = 0.
     for p in params:
+        # breakpoint()
         if p.grad is not None:
             grad_norm += torch.sum(p.grad ** 2)
     return torch.sqrt(grad_norm)

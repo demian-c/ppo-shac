@@ -64,12 +64,13 @@ class SHAC:
 
         self.steps_num = cfg["params"]["config"]["steps_num"]
         self.max_epochs = cfg["params"]["config"]["max_epochs"]
+        # breakpoint()
         self.actor_lr = float(cfg["params"]["config"]["actor_learning_rate"])
         self.critic_lr = float(cfg['params']['config']['critic_learning_rate'])
         self.lr_schedule = cfg['params']['config'].get('lr_schedule', 'linear')
         
         self.target_critic_alpha = cfg['params']['config'].get('target_critic_alpha', 0.4)
-
+        # breakpoint()
         self.obs_rms = None
         if cfg['params']['config'].get('obs_rms', False):
             self.obs_rms = RunningMeanStd(shape = (self.num_obs), device = self.device)
@@ -114,13 +115,18 @@ class SHAC:
         # create actor critic network
         self.actor_name = cfg["params"]["network"].get("actor", 'ActorStochasticMLP') # choices: ['ActorDeterministicMLP', 'ActorStochasticMLP']
         self.critic_name = cfg["params"]["network"].get("critic", 'CriticMLP')
+
+        self.actor_neural_name = 'ActorDeterministicMLP'
         actor_fn = getattr(models.actor, self.actor_name)
+        actor_neural_fn = getattr(models.actor,self.actor_neural_name)
         self.actor = actor_fn(self.num_obs, self.num_actions, cfg['params']['network'], device = self.device)
+        self.actor_neural = actor_neural_fn(self.num_actions,self.num_actions,cfg['params']['network'], device = self.device)
+        # breakpoint()
         critic_fn = getattr(models.critic, self.critic_name)
         self.critic = critic_fn(self.num_obs, cfg['params']['network'], device = self.device)
         self.all_params = list(self.actor.parameters()) + list(self.critic.parameters())
         self.target_critic = copy.deepcopy(self.critic)
-    
+        
         if cfg['params']['general']['train']:
             self.save('init_policy')
     
@@ -182,6 +188,7 @@ class SHAC:
 
         # initialize trajectory to cut off gradients between episodes.
         obs = self.env.initialize_trajectory()
+        # breakpoint()
         if self.obs_rms is not None:
             # update obs rms
             with torch.no_grad():
@@ -189,27 +196,28 @@ class SHAC:
             # normalize the current obs
             obs = obs_rms.normalize(obs)
         for i in range(self.steps_num):
+            # breakpoint()
             # collect data for critic training
             with torch.no_grad():
                 self.obs_buf[i] = obs.clone()
 
-            actions = self.actor(obs, deterministic = deterministic)
-
+            actions = self.actor_neural(self.actor(obs, deterministic = deterministic))
+            # breakpoint()#actions 有梯度
             obs, rew, done, extra_info = self.env.step(torch.tanh(actions))
-            
+            # breakpoint()
             with torch.no_grad():
                 raw_rew = rew.clone()
             
             # scale the reward
             rew = rew * self.rew_scale
-            
+            # breakpoint()
             if self.obs_rms is not None:
                 # update obs rms
                 with torch.no_grad():
                     self.obs_rms.update(obs)
                 # normalize the current obs
                 obs = obs_rms.normalize(obs)
-
+#不进入这个分枝
             if self.ret_rms is not None:
                 # update ret rms
                 with torch.no_grad():
@@ -219,7 +227,7 @@ class SHAC:
                 rew = rew / torch.sqrt(ret_var + 1e-6)
 
             self.episode_length += 1
-        
+            # breakpoint()
             done_env_ids = done.nonzero(as_tuple = False).squeeze(-1)
 
             next_values[i + 1] = self.target_critic(obs).squeeze(-1)
@@ -230,6 +238,7 @@ class SHAC:
                     or (torch.abs(extra_info['obs_before_reset'][id]) > 1e6).sum() > 0: # ugly fix for nan values
                     next_values[i + 1, id] = 0.
                 elif self.episode_length[id] < self.max_episode_length: # early termination
+                    # breakpoint()
                     next_values[i + 1, id] = 0.
                 else: # otherwise, use terminal value critic to estimate the long-term performance
                     if self.obs_rms is not None:
@@ -241,7 +250,7 @@ class SHAC:
             if (next_values[i + 1] > 1e6).sum() > 0 or (next_values[i + 1] < -1e6).sum() > 0:
                 print('next value error')
                 raise ValueError
-            
+            # breakpoint()
             rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
 
             if i < self.steps_num - 1:
@@ -273,8 +282,9 @@ class SHAC:
                 self.episode_gamma *= self.gamma
                 if len(done_env_ids) > 0:
                     self.episode_loss_meter.update(self.episode_loss[done_env_ids])
-                    self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
-                    self.episode_length_meter.update(self.episode_length[done_env_ids])
+                    self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids.cpu()])
+                    # breakpoint()
+                    self.episode_length_meter.update(self.episode_length[done_env_ids.cpu()])
                     for done_env_id in done_env_ids:
                         if (self.episode_loss[done_env_id] > 1e6 or self.episode_loss[done_env_id] < -1e6):
                             print('ep loss error')
@@ -289,7 +299,7 @@ class SHAC:
                         self.episode_gamma[done_env_id] = 1.
 
         actor_loss /= self.steps_num * self.num_envs
-
+        # breakpoint()
         if self.ret_rms is not None:
             actor_loss = actor_loss * torch.sqrt(ret_var + 1e-6)
             
@@ -364,6 +374,7 @@ class SHAC:
     def compute_critic_loss(self, batch_sample):
         predicted_values = self.critic(batch_sample['obs']).squeeze(-1)
         target_values = batch_sample['target_values']
+        # breakpoint()
         critic_loss = ((predicted_values - target_values) ** 2).mean()
 
         return critic_loss
@@ -412,6 +423,7 @@ class SHAC:
             self.time_report.end_timer("backward simulation")
 
             with torch.no_grad():
+                # breakpoint()
                 self.grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
                 if self.truncate_grad:
                     clip_grad_norm_(self.actor.parameters(), self.grad_norm)
@@ -451,7 +463,13 @@ class SHAC:
             # prepare dataset
             self.time_report.start_timer("prepare critic dataset")
             with torch.no_grad():
+                # breakpoint()
+                #进入td lambda 分支
                 self.compute_target_values()
+                #self.obs_buf:(horizen_length,num_actors,num_obs)
+                #self.target_values:(horizen_length,num_actors)
+                #batch_size= num_actor*horizen_length / batch_num(=4)
+                #len(datset) = batch_num(=4)
                 dataset = CriticDataset(self.batch_size, self.obs_buf, self.target_values, drop_last = False)
             self.time_report.end_timer("prepare critic dataset")
 
