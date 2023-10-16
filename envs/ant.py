@@ -32,14 +32,16 @@ class AntEnv(DFlexEnv):
     def __init__(self, render=False, device='cuda:0', num_envs=4096, seed=0, episode_length=1000, no_grad=True, stochastic_init=False, MM_caching_frequency = 1, early_termination = True):
         num_obs = 37
         num_act = 8
-    
-        super(AntEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, no_grad, render, device)
+        # 纯ppo算法:no grad应该是true
+        # ppo with shac no grad 应该是false
+        # super(AntEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, no_grad, render, device)
+        super(AntEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, True, render, device)
 
         self.stochastic_init = stochastic_init
         self.early_termination = early_termination
 
         self.init_sim()
-
+        breakpoint()
         # other parameters
         self.termination_height = 0.27
         self.action_strength = 200.0
@@ -159,7 +161,7 @@ class AntEnv(DFlexEnv):
         actions = torch.clip(actions, -1., 1.)
 
         self.actions = actions.clone()
-
+        
         self.state.joint_act.view(self.num_envs, -1)[:, 6:] = actions * self.action_strength
         
         self.state = self.integrator.forward(self.model, self.state, self.sim_dt, self.sim_substeps, self.MM_caching_frequency)
@@ -172,7 +174,7 @@ class AntEnv(DFlexEnv):
 
         self.calculateObservations()
         self.calculateReward()
-
+        # breakpoint()
         env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
 
         if self.no_grad == False:
@@ -186,7 +188,7 @@ class AntEnv(DFlexEnv):
            self.reset(env_ids)
 
         self.render()
-
+        breakpoint()
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
     
     def reset(self, env_ids = None, force_reset = True):
@@ -280,7 +282,7 @@ class AntEnv(DFlexEnv):
 
         up_vec = tu.quat_rotate(torso_quat, self.basis_vec1)
         heading_vec = tu.quat_rotate(torso_quat, self.basis_vec0)
-
+        # breakpoint()
         self.obs_buf = torch.cat([torso_pos[:, 1:2], # 0
                                 torso_rot, # 1:5
                                 lin_vel, # 5:8
@@ -300,7 +302,7 @@ class AntEnv(DFlexEnv):
         progress_reward = self.obs_buf[:, 5]
 
         self.rew_buf = progress_reward + up_reward + heading_reward + height_reward + torch.sum(self.actions ** 2, dim = -1) * self.action_penalty
-
+        breakpoint()
         # reset agents
         if self.early_termination:
             self.reset_buf = torch.where(self.obs_buf[:, 0] < self.termination_height, torch.ones_like(self.reset_buf), self.reset_buf)
