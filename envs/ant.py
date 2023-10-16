@@ -35,13 +35,13 @@ class AntEnv(DFlexEnv):
         # 纯ppo算法:no grad应该是true
         # ppo with shac no grad 应该是false
         # super(AntEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, no_grad, render, device)
-        super(AntEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, True, render, device)
+        super(AntEnv, self).__init__(num_envs, num_obs, num_act, episode_length, MM_caching_frequency, seed, False, render, device)
 
         self.stochastic_init = stochastic_init
         self.early_termination = early_termination
 
         self.init_sim()
-        breakpoint()
+        
         # other parameters
         self.termination_height = 0.27
         self.action_strength = 200.0
@@ -188,7 +188,6 @@ class AntEnv(DFlexEnv):
            self.reset(env_ids)
 
         self.render()
-        breakpoint()
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
     
     def reset(self, env_ids = None, force_reset = True):
@@ -302,7 +301,7 @@ class AntEnv(DFlexEnv):
         progress_reward = self.obs_buf[:, 5]
 
         self.rew_buf = progress_reward + up_reward + heading_reward + height_reward + torch.sum(self.actions ** 2, dim = -1) * self.action_penalty
-        breakpoint()
+
         # reset agents
         if self.early_termination:
             self.reset_buf = torch.where(self.obs_buf[:, 0] < self.termination_height, torch.ones_like(self.reset_buf), self.reset_buf)
