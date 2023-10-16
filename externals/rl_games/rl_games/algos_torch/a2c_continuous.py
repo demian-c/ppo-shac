@@ -26,13 +26,14 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
         self.model = self.network.build(config)
         self.model.to(self.ppo_device)
+        self.shac = torch.nn.Linear(in_features=self.actions_num,out_features=self.actions_num,bias=True).to(self.ppo_device)
         self.states = None
 
         self.init_rnn_from_model(self.model)
         self.last_lr = float(self.last_lr)
 
         self.optimizer = optim.Adam(self.model.parameters(), float(self.last_lr), eps=1e-08, weight_decay=self.weight_decay)
-
+        self.shac_optimizer = optim.Adam(self.shac.parameters(),float(3e-4),eps = 1e-08,weight_decay=self.weight_decay)
         if self.normalize_input:
             if isinstance(self.observation_space,gym.spaces.Dict):
                 self.running_mean_std = RunningMeanStdObs(obs_shape).to(self.ppo_device)
@@ -90,9 +91,9 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
         old_sigma_batch = input_dict['sigma']
         return_batch = input_dict['returns']
         actions_batch = input_dict['actions']
+        raw_actions_batch = input_dict['raw_actions']
         obs_batch = input_dict['obs']
         obs_batch = self._preproc_obs(obs_batch)
-
         lr = self.last_lr
         kl = 1.0
         lr_mul = 1.0
@@ -100,7 +101,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
         batch_dict = {
             'is_train': True,
-            'prev_actions': actions_batch, 
+            'prev_actions': raw_actions_batch, 
             'obs' : obs_batch,
         }
 
