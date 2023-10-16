@@ -19,6 +19,8 @@ from datetime import datetime
 from tensorboardX import SummaryWriter
 import torch 
 from torch import nn
+import utils.torch_utils as tu
+from torch.nn.utils.clip_grad import clip_grad_norm_
  
 from time import sleep
 
@@ -295,6 +297,9 @@ class A2CBase:
                 res_dict['values'] = value
         if self.normalize_value:
             res_dict['values'] = self.value_mean_std(res_dict['values'], True)
+        if input_dict['is_train']==False:
+            res_dict['actions'] = self.shac(res_dict['raw_actions'])
+        # breakpoint()
         return res_dict
 
     def get_values(self, obs):
@@ -597,19 +602,19 @@ class A2CBase:
                 res_dict = self.get_masked_action_values(self.obs, masks)
             else:
                 res_dict = self.get_action_values(self.obs)
-
-            self.experience_buffer.update_data('obses', n, self.obs['obs'])
+            with torch.no_grad():
+                self.experience_buffer.update_data('obses', n, self.obs['obs'])
             self.experience_buffer.update_data('dones', n, self.dones)
-
+            # breakpoint()
             for k in update_list:
                 self.experience_buffer.update_data(k, n, res_dict[k]) 
             if self.has_central_value:
                 self.experience_buffer.update_data('states', n, self.obs['states'])
 
             step_time_start = time.time()
-            self.obs, rewards, self.dones, infos = self.env_step(res_dict['actions'])
+            self.obs, rewards, self.dones, infos = self.env_step(torch.tanh(res_dict['actions']))
             step_time_end = time.time()
-
+            
             step_time += (step_time_end - step_time_start)
 
             shaped_rewards = self.rewards_shaper(rewards)
@@ -639,14 +644,20 @@ class A2CBase:
         mb_fdones = self.experience_buffer.tensor_dict['dones'].float()
         mb_values = self.experience_buffer.tensor_dict['values']
         mb_rewards = self.experience_buffer.tensor_dict['rewards']
+        mb_actions = self.experience_buffer.tensor_dict['actions']
         mb_advs = self.discount_values(fdones, last_values, mb_fdones, mb_values, mb_rewards)
         mb_returns = mb_advs + mb_values
 
         batch_dict = self.experience_buffer.get_transformed_list(swap_and_flatten01, self.tensor_list)
-        batch_dict['returns'] = swap_and_flatten01(mb_returns)
+        with torch.no_grad():
+            batch_dict['returns'] = swap_and_flatten01(mb_returns)
         batch_dict['played_frames'] = self.batch_size
         batch_dict['step_time'] = step_time
-
+        batch_dict['rewards'] = mb_rewards
+        batch_dict['not_flattened_values'] = mb_values
+        batch_dict['not_flattened_actions'] = mb_actions
+        batch_dict['not_flattened_dones'] = mb_fdones
+        batch_dict['fdones'] = fdones
         return batch_dict
 
     def play_steps_rnn(self):
@@ -983,20 +994,80 @@ class ContinuousA2CBase(A2CBase):
 
     def init_tensors(self):
         A2CBase.init_tensors(self)
-        self.update_list = ['actions', 'neglogpacs', 'values', 'mus', 'sigmas']
+        self.update_list = ['actions', 'raw_actions','neglogpacs', 'values', 'mus', 'sigmas']
         self.tensor_list = self.update_list + ['obses', 'states', 'dones']
+    def compute_actor_loss(self,batch_dict):
+        rew_acc = torch.zeros((self.horizon_length + 1, self.num_actors), dtype = torch.float32, device = self.ppo_device)
+        gamma = torch.ones(self.num_actors, dtype = torch.float32, device = self.ppo_device)
+        next_values = torch.zeros((self.horizon_length + 1, self.num_actors), dtype = torch.float32, device = self.ppo_device)
+        actor_loss = torch.tensor(0., dtype = torch.float32, device = self.ppo_device)
+        # 32x2048,第一行去掉不用
+        all_dones = batch_dict['not_flattened_dones']
+        # 2048,作为最后一次的dones
+        fdones = batch_dict['fdones']
+        values = batch_dict['not_flattened_values']
+        rewards = batch_dict['rewards']
+        # 32x2048x27
+        obses = self.experience_buffer.tensor_dict['obses']
+        self.episode_length = torch.zeros(self.num_actors,dtype = torch.uint8,device = self.ppo_device)
+        for i in range(self.horizon_length):
+            if i <self.horizon_length-1:
+                done  = all_dones[i]
+            else:
+                done = fdones
+            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
+            next_values[i+1] = values[i].squeeze(-1)
+            self.episode_length+=1
+            for id in done_env_ids:
+                if torch.isnan(obses[i][id]).sum() > 0 \
+                    or torch.isinf(obses[i][id]).sum() > 0 \
+                    or (torch.abs(obses[i][id]) > 1e6).sum() > 0: # ugly fix for nan values
+                    next_values[i + 1, id] = 0.
+                elif self.episode_length[id] < 1000: # early termination
+                    # breakpoint()
+                    next_values[i + 1, id] = 0.
+                else: # otherwise, use terminal value critic to estimate the long-term performance
+                    # if self.obs_rms is not None:
+                    #     real_obs = obs_rms.normalize(extra_info['obs_before_reset'][id])
+                    # else:
+                    #     real_obs = extra_info['obs_before_reset'][id]
+                    next_values[i + 1, id] = self.values[i].squeeze(-1)
+            if (next_values[i + 1] > 1e6).sum() > 0 or (next_values[i + 1] < -1e6).sum() > 0:
+                print('next value error')
+                raise ValueError
+
+            rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rewards[i].squeeze(-1)
+            
+            if i < self.horizon_length - 1:
+                actor_loss = actor_loss + (- rew_acc[i + 1, done_env_ids] - self.gamma * gamma[done_env_ids] * next_values[i + 1, done_env_ids]).sum()
+            else:
+                # terminate all envs at the end of optimization iteration
+                actor_loss = actor_loss + (- rew_acc[i + 1, :] - self.gamma * gamma * next_values[i + 1, :]).sum()
+
+            # compute gamma for next step
+            gamma = gamma * self.gamma
+
+            # clear up gamma and rew_acc for done envs
+            gamma[done_env_ids] = 1.
+            rew_acc[i + 1, done_env_ids] = 0.
+            self.episode_length[done_env_ids] = 0
+
+        actor_loss/=self.horizon_length * self.num_actors
+        return actor_loss
+
 
     def train_epoch(self):
         super().train_epoch()
 
         self.set_eval()
         play_time_start = time.time()
-        with torch.no_grad():
-            if self.is_rnn:
-                batch_dict = self.play_steps_rnn()
-            else:
-                batch_dict = self.play_steps()
-
+        # 没有提督,都注释掉!!!!!!!!!!!!!!!!!
+        # with torch.no_grad():
+        #     if self.is_rnn:
+        #         batch_dict = self.play_steps_rnn()
+        #     else:
+        #         batch_dict = self.play_steps()
+        batch_dict = self.play_steps()
         play_time_end = time.time()
         update_time_start = time.time()
         rnn_masks = batch_dict.get('rnn_masks', None)
@@ -1018,6 +1089,26 @@ class ContinuousA2CBase(A2CBase):
         if self.is_rnn:
             frames_mask_ratio = rnn_masks.sum().item() / (rnn_masks.nelement())
             print(frames_mask_ratio)
+        # 在这里用batch——dict的数据, 计算shac的actorloss,然后加到a-loss里面,就差compute aloss啦!
+        def actor_closure():
+            self.shac_optimizer.zero_grad()
+            shac_actor_loss = self.compute_actor_loss(batch_dict)
+            shac_actor_loss.backward()
+            with torch.no_grad():
+                    # breakpoint()
+                    self.grad_norm_before_clip = tu.grad_norm(self.shac.parameters())
+                    if self.truncate_grads:
+                        clip_grad_norm_(self.shac.parameters(), self.grad_norm)
+                    self.grad_norm_after_clip = tu.grad_norm(self.shac.parameters()) 
+                
+                    # sanity check
+                    if torch.isnan(self.grad_norm_before_clip) or self.grad_norm_before_clip > 1000000.:
+                        print('NaN gradient')
+                        raise ValueError
+            return shac_actor_loss
+        
+        self.shac_optimizer.step(actor_closure).detach().item()
+        self.shac_optimizer.zero_grad()
 
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
@@ -1069,13 +1160,14 @@ class ContinuousA2CBase(A2CBase):
         dones = batch_dict['dones']
         values = batch_dict['values']
         actions = batch_dict['actions']
+        raw_actions = batch_dict['raw_actions']
         neglogpacs = batch_dict['neglogpacs']
         mus = batch_dict['mus']
         sigmas = batch_dict['sigmas']
         rnn_states = batch_dict.get('rnn_states', None)
         rnn_masks = batch_dict.get('rnn_masks', None)
-
-        advantages = returns - values
+        with torch.no_grad():
+            advantages = returns - values
 
         if self.normalize_value:
             values = self.value_mean_std(values)
@@ -1095,6 +1187,7 @@ class ContinuousA2CBase(A2CBase):
         dataset_dict['advantages'] = advantages
         dataset_dict['returns'] = returns
         dataset_dict['actions'] = actions
+        dataset_dict['raw_actions'] = raw_actions
         dataset_dict['obs'] = obses
         dataset_dict['rnn_states'] = rnn_states
         dataset_dict['rnn_masks'] = rnn_masks
