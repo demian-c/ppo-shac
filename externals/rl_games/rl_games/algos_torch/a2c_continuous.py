@@ -84,12 +84,12 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
         assert False
 
     def calc_gradients(self, input_dict):
-        value_preds_batch = input_dict['old_values']
+        value_preds_batch = input_dict['old_values'].detach()
         old_action_log_probs_batch = input_dict['old_logp_actions']
         advantage = input_dict['advantages']
         old_mu_batch = input_dict['mu']
         old_sigma_batch = input_dict['sigma']
-        return_batch = input_dict['returns']
+        return_batch = input_dict['returns'].detach()
         actions_batch = input_dict['actions']
         raw_actions_batch = input_dict['raw_actions']
         obs_batch = input_dict['obs']
@@ -118,9 +118,9 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             entropy = res_dict['entropy']
             mu = res_dict['mus']
             sigma = res_dict['sigmas']
-
+            # breakpoint()
             a_loss = common_losses.actor_loss(old_action_log_probs_batch, action_log_probs, advantage, self.ppo, curr_e_clip)
-
+            # breakpoint()
             if self.has_value_loss:
                 c_loss = common_losses.critic_loss(value_preds_batch, values, curr_e_clip, return_batch, self.clip_value)
             else:
