@@ -298,7 +298,7 @@ class AverageMeter(nn.Module):
         return self.current_size
 
     def get_mean(self):
-        return self.mean.squeeze(0).cpu().numpy()
+        return self.mean.detach().squeeze(0).cpu().numpy()
 
 
 class IdentityRNN(nn.Module):
