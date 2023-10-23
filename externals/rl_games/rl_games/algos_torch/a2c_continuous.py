@@ -12,7 +12,8 @@ import torch
 from torch import nn
 import numpy as np
 import gym
-
+from memory_profiler import profile
+from torch import profiler
 class A2CAgent(a2c_common.ContinuousA2CBase):
     def __init__(self, base_name, config):
         a2c_common.ContinuousA2CBase.__init__(self, base_name, config)
@@ -82,7 +83,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
 
     def get_masked_action_values(self, obs, action_masks):
         assert False
-
+    # @profile
     def calc_gradients(self, input_dict):
         value_preds_batch = input_dict['old_values'].detach()
         old_action_log_probs_batch = input_dict['old_logp_actions']
@@ -104,7 +105,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             'prev_actions': raw_actions_batch, 
             'obs' : obs_batch,
         }
-
+        breakpoint()
         rnn_masks = None
         if self.is_rnn:
             rnn_masks = input_dict['rnn_masks']
@@ -118,7 +119,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
             entropy = res_dict['entropy']
             mu = res_dict['mus']
             sigma = res_dict['sigmas']
-            # breakpoint()
+            breakpoint()
             a_loss = common_losses.actor_loss(old_action_log_probs_batch, action_log_probs, advantage, self.ppo, curr_e_clip)
             # breakpoint()
             if self.has_value_loss:
@@ -139,6 +140,7 @@ class A2CAgent(a2c_common.ContinuousA2CBase):
                     param.grad = None
 
         self.scaler.scale(loss).backward()
+        # breakpoint()
         #TODO: Refactor this ugliest code of they year
         if self.truncate_grads:
             if self.multi_gpu:
