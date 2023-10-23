@@ -240,12 +240,16 @@ class ModelA2CContinuousLogStd(BaseModel):
                 }                
                 return result
             else:
+                #进入这个分枝
                 selected_action = distr.sample()
                 neglogp = self.neglogp(selected_action, mu, sigma, logstd)
+                #pi_1过程完毕,还需要pi——2过程
+                # selected_action_shac = self.a2c_network.shac(selected_action)
                 result = {
                     'neglogpacs' : torch.squeeze(neglogp),
                     'values' : value,
                     'actions' : selected_action,
+                    'raw_actions': selected_action,
                     'rnn_states' : states,
                     'mus' : mu,
                     'sigmas' : sigma
