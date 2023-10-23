@@ -6,7 +6,7 @@ from rl_games.common.segment_tree import SumSegmentTree, MinSegmentTree
 import torch
 
 from rl_games.algos_torch.torch_ext import numpy_to_torch_dtype_dict
-
+from memory_profiler import profile
 class ReplayBuffer(object):
     def __init__(self, size, ob_space):
         """Create Replay buffer.
@@ -345,7 +345,8 @@ class ExperienceBuffer:
             self.tensor_dict['actions'] = self._create_tensor_from_space(gym.spaces.Box(low=0, high=1,shape=self.actions_shape, dtype=np.float32), obs_base_shape)
             self.tensor_dict['mus'] = self._create_tensor_from_space(gym.spaces.Box(low=0, high=1,shape=self.actions_shape, dtype=np.float32), obs_base_shape)
             self.tensor_dict['sigmas'] = self._create_tensor_from_space(gym.spaces.Box(low=0, high=1,shape=self.actions_shape, dtype=np.float32), obs_base_shape)
-
+            self.tensor_dict['raw_actions'] = self._create_tensor_from_space(gym.spaces.Box(low=0, high=1,shape=self.actions_shape, dtype=np.float32), obs_base_shape)
+            
     def _init_from_aux_dict(self, tensor_dict):
         obs_base_shape = self.obs_base_shape
         for k,v in tensor_dict.items():
@@ -377,8 +378,11 @@ class ExperienceBuffer:
                 self.tensor_dict[name][k][index,:] = v
         else:
             self.tensor_dict[name][index,:] = val
-
-
+    # @profile
+    def set_zero(self,list):
+        for name in list:
+            self.tensor_dict[name] = torch.zeros(self.tensor_dict[name].shape,dtype =self.tensor_dict[name].dtype,device = self.tensor_dict[name].device )
+    
     def update_data_rnn(self, name, indices,play_mask, val):
         if type(val) is dict:
             for k,v in val:
